@@ -6,14 +6,16 @@ Usage:
   bitpeers -h | --help
 
 Options:
-  --output=FORMAT   Output file format: json or txt [default: json]
-  -h --help         Show this screen.
+  --output=FORMAT           Output file format: json or txt [default: json]
+  -a --addresses-only     Only output addresses
+  -h --help                 Show this screen.
 '''
 
 
 import hashlib
 import sys
 import socket
+import json
 
 from base64 import b32encode
 from docopt import docopt
@@ -36,6 +38,10 @@ Peers.dat organization
 - Checksum
 '''
 
+#############
+# CONSTANTS #
+#############
+
 # docs say it should be this but p2p network seems end b"\x00" x2
 # IPV4_PREFIX = b"\x00" * 10 + b"\xff" * 2
 IPV4_PREFIX = b"\x00" * 10 + b"\x00" * 2
@@ -45,6 +51,7 @@ HEADER_SIZE_IN_BYTES = 50
 PEER_SIZE_IN_BYTES = 62
 CHECKSUM_SIZE_IN_BYTES = 32
 
+
 ###########
 # CLASSES #
 ###########
@@ -52,16 +59,25 @@ CHECKSUM_SIZE_IN_BYTES = 32
 
 # Represents an address
 class Address:
-    def __init__(self, serlialization_version, time, service_flags, ip, port):
-        self.serlialization_version = serlialization_version
+    def __init__(self, serialization_version, time, service_flags, ip, port):
+        self.serialization_version = serialization_version
         self.time = time
         self.service_flags = service_flags
         self.ip = ip
         self.port = port  # big_endian
 
     def __repr__(self):
-        return f"Ser. Version: 0x{self.serlialization_version.hex()} time: {self.time}"\
+        return f"Ser. Version: 0x{self.serialization_version.hex()} time: {self.time}"\
             + f"service_flags: {self.service_flags} | ip: {self.ip} | port: {self.port}"
+
+    def to_dict(self):
+        return {
+            "serialization_version": self.serialization_version.hex(),
+            "time": self.time,
+            "service_flags": self.service_flags,
+            "ip": self.ip,
+            "port": self.port
+        }
 
 
 # Represents a peer - an address and some additional metadata
@@ -71,15 +87,21 @@ class Peer:
         self.source = source
         self.last_success = last_success
         self.attempts = attempts
-        self.buckets = []  # list of bucket ids that this peer is in; useful when outputting
 
     def __repr__(self):
         return f"{self.address} | source: {self.source} | last_success: {self.last_success} | attempts: {self.attempts}"
 
+    def to_dict(self):
+        address_dict = self.address.to_dict()
+        address_dict['source'] = self.source
+        address_dict['last_success'] = self.last_success
+        address_dict['attempts'] = self.attempts
+        return address_dict
+
     @classmethod
     def deserialize(cls, peer_data):
         # TODO check if this is correct
-        serlialization_version = peer_data[0:4]
+        serialization_version = peer_data[0:4]
         time = int.from_bytes(peer_data[4:8], 'little')
         # TODO: Check if this is correct
         service_flags = int.from_bytes(peer_data[8:16], 'little')
@@ -88,7 +110,7 @@ class Peer:
         source = bytes_to_ip(peer_data[34:50])
         last_success = int.from_bytes(peer_data[50:58], 'little')
         attempts = int.from_bytes(peer_data[58:62], 'little')
-        address = Address(serlialization_version, time,
+        address = Address(serialization_version, time,
                           service_flags, ip, port)
         return cls(address, source, last_success, attempts)
 
@@ -98,6 +120,12 @@ class Bucket:
     def __init__(self, size, peer_id_list=[]):
         self.size = size
         self.peer_id_list = peer_id_list
+
+    def to_dict(self):
+        return {
+            "size": self.size,
+            "peer_id_list": self.peer_id_list
+        }
 
     @classmethod
     def deserialize(cls, bucket_size, bytes):
@@ -139,9 +167,28 @@ class PeersDB:
             + f"Tried Addresses (in header | actual): {self.tried_address_count} | {len(self.tried_addresses)}\n"\
             + f"New Buckets (in header | actual): {self.new_bucket_count} | {len(self.new_buckets)}\n"
 
-    ###########################################
-    # Class Methods - useful for deserializing#
-    ###########################################
+    def to_dict(self, addresses_only):
+        addresses = {
+            "new_addresses": [peer.to_dict() for peer in self.new_addresses],
+            "tried_addresses": [peer.to_dict() for peer in self.tried_addresses],
+        }
+        if addresses_only:
+            return addresses
+        return {
+            "path": self.path,
+            "message_bytes": self.message_bytes.hex(),
+            "version": self.version,
+            "key_size": self.key_size,
+            "new_addr_count": self.new_address_count,
+            "tried_addr_count": self.tried_address_count,
+            "new_bucket_count": self.new_bucket_count,
+            **addresses,
+            "new_buckets": [bucket.to_dict() for bucket in self.new_buckets]
+        }
+
+    ############################################
+    # Class Methods - useful for deserializing #
+    ############################################
     @classmethod
     def verify_serialized_data_integrity(cls, raw_data):
         try:
@@ -266,7 +313,7 @@ def read_file(filename):
 ########
 # Main #
 ########
-def bitpeers(filename, output):
+def bitpeers(filename, output, addresses_only):
     print("Starting...")
 
     # ingest file
@@ -278,10 +325,13 @@ def bitpeers(filename, output):
     # Print summary
     print(peers_db)
 
-    # TODO: allow different ways of outputting the file: json, txt, etc
+    # Now figure out output, if any is needed
+
     if output == 'json':
-        print("OUTPUT json ", output)
-    elif output == 'txt':
+        peers_db_dict = peers_db.to_dict(addresses_only)
+        with open("output.json", 'w') as outfile:
+            json.dump(peers_db_dict, outfile)
+    elif output == 'csv':
         print("output txt", output)
     else:
         print("output must be json or txt")
@@ -298,5 +348,7 @@ if __name__ == "__main__":
     else:
         output = None
 
+    addresses_only = arguments['--addresses-only']
+
     # Call main function
-    bitpeers(filename, output)
+    bitpeers(filename, output, addresses_only)
