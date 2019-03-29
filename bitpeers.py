@@ -132,12 +132,12 @@ class PeersDB:
             sys.exit("Address counts differ from read and actual")
 
     def __repr__(self):
-        return f"Path: {self.path}\n" + f"Message Bytes: {self.message_bytes}\n" + f"Version: {self.version}\n"\
-            + f"Key Size: {self.key_size}\n" + f"New Addresses (read from file): {self.new_address_count}\n"\
-            + f"Tried Addresses (count from file): {self.tried_address_count}\n"\
-            + f"New Addresses (actual count): {len(self.new_addresses)}\n"\
-            + f"Tried Addresses (actual count): {len(self.tried_addresses)}\n"\
-            + "Buckets: {self.new_buckets}"
+        return f"PeersDB Summary:\n"\
+            + f"Path: {self.path}\n" + f"Message Bytes (hex): {self.message_bytes.hex()}\n" + f"Version: {self.version}\n"\
+            + f"Key Size: {self.key_size}\n"\
+            + f"New Addresses (in header | actual): {self.new_address_count} | {len(self.new_addresses)} \n"\
+            + f"Tried Addresses (in header | actual): {self.tried_address_count} | {len(self.tried_addresses)}\n"\
+            + f"New Buckets (in header | actual): {self.new_bucket_count} | {len(self.new_buckets)}\n"
 
     ###########################################
     # Class Methods - useful for deserializing#
@@ -169,7 +169,8 @@ class PeersDB:
             data[next_marker:next_marker+4], 'little')
         tried_address_count = int.from_bytes(
             data[next_marker+4:next_marker+8], 'little')
-        buckets = data[next_marker+8:next_marker+12]
+        buckets = int.from_bytes(
+            data[next_marker+8:next_marker+12], 'little') ^ (1 << 30)
         try:
             assert message_bytes == b'\xf9\xbe\xb4\xd9'
             assert version == 1
@@ -203,11 +204,12 @@ class PeersDB:
             buckets.append(bucket)
             bucket_count_actual += 1
             marker += 4
-
         try:
             assert bucket_count_actual == bucket_count_expected
+            return buckets
         except Exception:
             print("Bucket counts not matching, discarding all bucket data")
+            return []
 
     # Takes in raw bytes from a peers.dat and returns a completed PeersDB object
     @classmethod
@@ -234,17 +236,14 @@ class PeersDB:
         total_peers = peers_db.new_address_count + peers_db.tried_address_count
         bucket_data_start = HEADER_SIZE_IN_BYTES + total_peers*PEER_SIZE_IN_BYTES
         bucket_data = raw_data[bucket_data_start:-32]
-        print("Bucket data length: ", len(bucket_data))
         peers_db.new_buckets = cls.deserialize_buckets(
-            peers_db.new_buckets, bucket_data)
+            peers_db.new_bucket_count, bucket_data)
         return peers_db
 
 
 ###########
 # HELPERS #
 ###########
-
-
 # Convert 16 bytes to ipv4, v6 or onion address
 def bytes_to_ip(b):
     if b[:6] == ONION_PREFIX:
@@ -257,19 +256,16 @@ def bytes_to_ip(b):
 
 # Reads a file
 def read_file(filename):
-    # TODO put inside a try and except block
     print(f"\nReading file: {filename}")
     with open(filename, 'rb') as p:
         filedata = p.read()
-    print(f"Filesize loaded: {len(filedata)} bytes\n")
+    print(f"File loaded: {len(filedata)} bytes\n")
     return filedata
 
 
 ########
 # Main #
 ########
-
-
 def bitpeers(filename, output):
     print("Starting...")
 
@@ -296,8 +292,6 @@ if __name__ == "__main__":
     # get commandline arguments
     arguments = docopt(__doc__)
     filename = arguments['--file']
-
-    print(arguments)  # TODO: remove
 
     if '--output' in arguments:
         output = arguments['--output']
