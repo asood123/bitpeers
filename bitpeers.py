@@ -46,7 +46,6 @@ Peers.dat organization
 # IPV4_PREFIX = b"\x00" * 10 + b"\xff" * 2
 IPV4_PREFIX = b"\x00" * 10 + b"\x00" * 2
 ONION_PREFIX = b"\xFD\x87\xD8\x7E\xEB\x43"  # ipv6 prefix for .onion address
-# TODO: update all constants
 HEADER_SIZE_IN_BYTES = 50
 PEER_SIZE_IN_BYTES = 62
 CHECKSUM_SIZE_IN_BYTES = 32
@@ -67,8 +66,8 @@ class Address:
         self.port = port  # big_endian
 
     def __repr__(self):
-        return f"Ser. Version: 0x{self.serialization_version.hex()} time: {self.time}"\
-            + f"service_flags: {self.service_flags} | ip: {self.ip} | port: {self.port}"
+        return f"Ser. Version: 0x{self.serialization_version.hex()} time: {self.time} "\
+            + f"service_flags: {self.service_flags}, ip: {self.ip}, port: {self.port}"
 
     def to_dict(self):
         return {
@@ -89,7 +88,7 @@ class Peer:
         self.attempts = attempts
 
     def __repr__(self):
-        return f"{self.address} | source: {self.source} | last_success: {self.last_success} | attempts: {self.attempts}"
+        return f"{self.address}, source: {self.source}, last_success: {self.last_success}, attempts: {self.attempts}\n"
 
     def to_dict(self):
         address_dict = self.address.to_dict()
@@ -100,16 +99,14 @@ class Peer:
 
     @classmethod
     def deserialize(cls, peer_data):
-        # TODO check if this is correct
         serialization_version = peer_data[0:4]
         time = int.from_bytes(peer_data[4:8], 'little')
-        # TODO: Check if this is correct
         service_flags = int.from_bytes(peer_data[8:16], 'little')
         ip = bytes_to_ip(peer_data[16:32])
         port = int.from_bytes(peer_data[32:34], 'big')
         source = bytes_to_ip(peer_data[34:50])
         last_success = int.from_bytes(peer_data[50:58], 'little')
-        attempts = int.from_bytes(peer_data[58:62], 'little')
+        attempts = int.from_bytes(peer_data[58:PEER_SIZE_IN_BYTES], 'little')
         address = Address(serialization_version, time,
                           service_flags, ip, port)
         return cls(address, source, last_success, attempts)
@@ -120,6 +117,9 @@ class Bucket:
     def __init__(self, size, peer_id_list=[]):
         self.size = size
         self.peer_id_list = peer_id_list
+
+    def __repr__(self):
+        return f"size: {self.size}, peers: {self.peer_id_list}\n"
 
     def to_dict(self):
         return {
@@ -159,13 +159,26 @@ class PeersDB:
         except Exception:
             sys.exit("Address counts differ from read and actual")
 
-    def __repr__(self):
+    def summary(self):
         return f"PeersDB Summary:\n"\
             + f"Path: {self.path}\n" + f"Message Bytes (hex): {self.message_bytes.hex()}\n" + f"Version: {self.version}\n"\
             + f"Key Size: {self.key_size}\n"\
-            + f"New Addresses (in header | actual): {self.new_address_count} | {len(self.new_addresses)} \n"\
-            + f"Tried Addresses (in header | actual): {self.tried_address_count} | {len(self.tried_addresses)}\n"\
-            + f"New Buckets (in header | actual): {self.new_bucket_count} | {len(self.new_buckets)}\n"
+            + f"New Addresses (in header, actual): {self.new_address_count}, {len(self.new_addresses)} \n"\
+            + f"Tried Addresses (in header, actual): {self.tried_address_count}, {len(self.tried_addresses)}\n"\
+            + f"New Buckets (in header, actual): {self.new_bucket_count}, {len(self.new_buckets)}\n"
+
+    def __repr__(self):
+        summary = self.summary()
+        summary += "\nNew addresses:\n"
+        for peers in self.new_addresses:
+            summary += str(peers)
+        summary += "\nTried addresses:\n"
+        for peers in self.tried_addresses:
+            summary += str(peers)
+        summary += "\nNew Buckets:\n"
+        for bucket in self.new_buckets:
+            summary += str(bucket)
+        return summary
 
     def to_dict(self, addresses_only):
         addresses = {
@@ -193,13 +206,14 @@ class PeersDB:
     def verify_serialized_data_integrity(cls, raw_data):
         try:
             # verify checksum
-            read_checksum = raw_data[-32:]
+            read_checksum = raw_data[-CHECKSUM_SIZE_IN_BYTES:]
             calculated_checksum = hashlib.sha256(
-                hashlib.sha256(raw_data[:-32]).digest()).digest()
+                hashlib.sha256(raw_data[:-CHECKSUM_SIZE_IN_BYTES]).digest()).digest()
             assert read_checksum == calculated_checksum, "File checksum failed"
 
             # Verify file size is at least as long as the counts listed in header
-            assert (len(raw_data)-50-32) % 62 >= 0, "File length invalid"
+            assert (len(raw_data)-HEADER_SIZE_IN_BYTES -
+                    CHECKSUM_SIZE_IN_BYTES) % PEER_SIZE_IN_BYTES >= 0, "File length invalid"
         except Exception:
             sys.exit('File verification failed, exiting')
 
@@ -231,7 +245,7 @@ class PeersDB:
     # Reads raw bytes of list of peers and returns the list with Peer objects
     @classmethod
     def deserialize_peer_list(cls, peer_count, peer_list_data):
-        return [Peer.deserialize(peer_list_data[i*62:(i+1)*62]) for i in range(peer_count)]
+        return [Peer.deserialize(peer_list_data[i*PEER_SIZE_IN_BYTES:(i+1)*PEER_SIZE_IN_BYTES]) for i in range(peer_count)]
 
     # Takes in bucket data and creates buckets
     @classmethod
@@ -270,11 +284,11 @@ class PeersDB:
         # import new addresses
         new_address_count = peers_db.new_address_count
         peers_db.new_addresses = cls.deserialize_peer_list(
-            new_address_count, raw_data[50:])
+            new_address_count, raw_data[HEADER_SIZE_IN_BYTES:])
 
         # import tried addresses
         peers_db.tried_addresses = cls.deserialize_peer_list(
-            peers_db.tried_address_count, raw_data[50+(62*new_address_count):])
+            peers_db.tried_address_count, raw_data[HEADER_SIZE_IN_BYTES+(PEER_SIZE_IN_BYTES*new_address_count):])
 
         # Verify address counts
         peers_db.verify_address_counts()
@@ -282,7 +296,7 @@ class PeersDB:
         # read and create buckets
         total_peers = peers_db.new_address_count + peers_db.tried_address_count
         bucket_data_start = HEADER_SIZE_IN_BYTES + total_peers*PEER_SIZE_IN_BYTES
-        bucket_data = raw_data[bucket_data_start:-32]
+        bucket_data = raw_data[bucket_data_start:-CHECKSUM_SIZE_IN_BYTES]
         peers_db.new_buckets = cls.deserialize_buckets(
             peers_db.new_bucket_count, bucket_data)
         return peers_db
@@ -323,16 +337,21 @@ def bitpeers(filename, output, addresses_only):
     peers_db = PeersDB.deserialize(filename, raw_data)
 
     # Print summary
-    print(peers_db)
+    print(peers_db.summary())
 
     # Now figure out output, if any is needed
 
     if output == 'json':
+        output_file = "output.json"
         peers_db_dict = peers_db.to_dict(addresses_only)
-        with open("output.json", 'w') as outfile:
+        with open(output_file, 'w') as outfile:
             json.dump(peers_db_dict, outfile)
-    elif output == 'csv':
-        print("output txt", output)
+        print(f"Created {output_file}")
+    elif output == 'txt':
+        output_file = "output.txt"
+        peers_db_txt = str(peers_db)
+        with open(output_file, 'w') as outfile:
+            outfile.write(peers_db_txt)
     else:
         print("output must be json or txt")
 
