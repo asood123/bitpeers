@@ -7,7 +7,7 @@ I rewrote it in Python and also extracted parts of `peers.dat` that Go version w
 Usage:
 
 ```
-git clone [REPO_NAME]
+git clone git@github.com:asood123/bitpeers.git
 pip install -r requirements.txt
 python bitpeers.py --file=sample_peers.dat --output=json
 ```
